@@ -7,6 +7,8 @@ import time
 import math
 from typing import Optional, Tuple, List
 import os
+import sys
+import argparse
 import wave
 import pyaudio
 from scipy import signal
@@ -42,9 +44,21 @@ class EnhancedMusicVisualizerApp:
         self.frame_skip = 0  # Skip frames for performance
         self.mp_draw = mp.solutions.drawing_utils
         
-        # Camera setup
+        # Input setup (camera or video)
         self.cap = None
-        self.init_camera()
+        self.is_video = False
+        # CLI: --video path.mp4 to replicate/look like reference
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument("--video", type=str, default=None)
+        try:
+            args, _ = parser.parse_known_args(sys.argv[1:])
+            self.video_path = args.video
+        except SystemExit:
+            self.video_path = None
+        if self.video_path and os.path.exists(self.video_path):
+            self.init_video(self.video_path)
+        else:
+            self.init_camera()
         
         # Audio setup (PyAudio streaming)
         self.audio_thread = None
@@ -63,7 +77,16 @@ class EnhancedMusicVisualizerApp:
         self.pyaudio_instance = None
         self.audio_stream = None
         self.stop_event = threading.Event()
-        self.lp_state = 0.0  # low-pass state for bass boost
+        self.lp_state = 0.0  # low-pass helper state
+        # High-pass filter states for frequency control (pure frequency)
+        self.hp_y = 0.0
+        self.hp_prev_x = 0.0
+        # (Keep reverb/pan objects but disabled by default)
+        self.reverb_buffer = np.zeros(int(self.sample_rate * 0.6), dtype=np.float32)
+        self.reverb_idx = 0
+        self.reverb_feedback = 0.0
+        self.reverb_mix = 0.0
+        self.pan_phase = 0.0
         
         # Gesture control variables
         self.visualizer_active = False
@@ -76,6 +99,7 @@ class EnhancedMusicVisualizerApp:
         self.speed = 1.0
         self.volume = 0.5
         self.frequency_boost = 1.0
+        self.freq_sensitivity = 28.0  # higher -> small movement makes big change
         self.speed_smooth = 1.0
         self.volume_smooth = 0.5
         self.frequency_smooth = 1.0
@@ -85,6 +109,14 @@ class EnhancedMusicVisualizerApp:
         self.fft_data = np.zeros(512)
         self.bars_count = 64
         self.bar_width = self.SCREEN_WIDTH // self.bars_count
+        self.max_visual_bars = 128
+        self.bar_energy = np.zeros(self.max_visual_bars, dtype=np.float32)  # per-line energy (normalized)
+        self.bar_smoothing = 0.78  # slightly snappier
+        # Equalizer-like bar dynamics
+        self.max_bar_px = 100  # cap height in pixels
+        self.bar_height = np.zeros(self.max_visual_bars, dtype=np.float32)
+        self.bar_attack = 0.7   # faster rise
+        self.bar_decay = 0.88   # slightly slower fall
         
         # Enhanced visual effects
         self.particles = []
@@ -111,6 +143,11 @@ class EnhancedMusicVisualizerApp:
         self.font_small = pygame.font.Font(None, 28)
         self.font_tiny = pygame.font.Font(None, 20)
         
+        # UI smoothing for stable overlays
+        self.left_line_pos = None
+        self.right_line_pos = None
+        self.ui_smoothing = 0.4  # higher -> more stable
+
         # Load music file
         self.load_music_file()
         
@@ -167,6 +204,21 @@ class EnhancedMusicVisualizerApp:
 
         if not opened:
             print("Warning: Could not open camera. The screen may appear black.")
+
+    def init_video(self, path: str):
+        """Initialize video file as input and loop it."""
+        try:
+            cap = cv2.VideoCapture(path)
+            if not cap.isOpened():
+                print(f"Failed to open video: {path}. Falling back to camera.")
+                self.init_camera()
+                return
+            self.cap = cap
+            self.is_video = True
+            print(f"Video input: {path}")
+        except Exception as e:
+            print(f"Error opening video {path}: {e}. Falling back to camera.")
+            self.init_camera()
 
     def load_music_file(self):
         """Load music file (supports MP3, WAV, etc.)"""
@@ -294,16 +346,19 @@ class EnhancedMusicVisualizerApp:
         if not self.visualizer_active:
             return
         
-        # Left hand controls frequency (VISUAL FEEDBACK ONLY)
+        # Left hand controls frequency (pure frequency control)
         if self.left_hand_landmarks:
             left_distance = self.calculate_finger_distance(self.left_hand_landmarks, 4, 8)
-            target_freq = max(0.5, min(2.0, left_distance * 8))
+            # Map pinch distance to 50..600 Hz with high sensitivity
+            freq_hz = max(50.0, min(600.0, left_distance * self.freq_sensitivity * 600.0))
+            # Convert to a visual boost factor for bars (kept modest)
+            target_freq = 0.8 + (freq_hz / 600.0) * 0.8
             old_freq = self.frequency_boost
-            self.frequency_boost = target_freq  # Direct assignment for responsiveness
+            self.frequency_boost = target_freq
             
             # Show visual feedback only (no audio restart)
             if abs(old_freq - self.frequency_boost) > 0.1:
-                print(f"🎛️ Frequency: {self.frequency_boost:.1f}x (visual only)")
+                print(f"🎛️ Frequency: {int(freq_hz)} Hz")
         
         # Right hand controls speed (VISUAL FEEDBACK ONLY)
         if self.right_hand_landmarks:
@@ -365,6 +420,10 @@ class EnhancedMusicVisualizerApp:
                 return np.zeros((self.SCREEN_HEIGHT, self.SCREEN_WIDTH, 3), dtype=np.uint8)
 
         ret, frame = self.cap.read()
+        if self.is_video and not ret:
+            # loop video
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ret, frame = self.cap.read()
         if not ret:
             # Attempt one quick retry
             ret, frame = self.cap.read()
@@ -458,10 +517,10 @@ class EnhancedMusicVisualizerApp:
         # Determine control type and value based on hand (camera is mirrored)
         if hand_label == "Left":  # This is actually right hand in camera view - controls speed
             control_type = "speed"
-            control_value = f"{self.speed:.1f}"
-        else:  # This is actually left hand in camera view - controls frequency  
+            control_value = f"{self.speed:.3f}"  # 3 decimals, e.g., 1.032
+        else:  # This is actually left hand in camera view - controls frequency
             control_type = "frequency"
-            control_value = f"{int(self.frequency_boost * 50)}"  # Show as percentage-like value
+            control_value = f"{int(self.frequency_boost * 100)}"  # percentage-like value
         
         # Position text above the hand - more minimal positioning
         text_x = (thumb_pos[0] + index_pos[0]) // 2
@@ -521,9 +580,9 @@ class EnhancedMusicVisualizerApp:
             
             def callback(in_data, frame_count, time_info, status):
                 if self.stop_event.is_set() or self.audio_data is None:
-                    return (np.zeros(frame_count, dtype=np.int16).tobytes(), pyaudio.paContinue)
-                # Read with speed (left hand controls speed -> playback_speed)
-                out = np.empty(frame_count, dtype=np.float32)
+                    return (np.zeros(frame_count * 2, dtype=np.int16).tobytes(), pyaudio.paContinue)
+                # Read with speed (left hand controls speed)
+                left = np.empty(frame_count, dtype=np.float32)
                 for i in range(frame_count):
                     idx = int(self.playback_pos)
                     frac = self.playback_pos - idx
@@ -542,16 +601,42 @@ class EnhancedMusicVisualizerApp:
                     alpha = min(0.99, max(0.01, (2 * math.pi * cutoff) / self.sample_rate))
                     self.lp_state = (1 - alpha) * self.lp_state + alpha * (sample / 32767.0)
                     boosted = sample + (self.lp_state * 0.35 * (self.frequency_boost - 1.0) * 32767.0)
-                    out[i] = boosted
+                    left[i] = boosted
+                    # speed clamped to 0.5x–2.0x
                     self.playback_pos += max(0.5, min(2.0, self.speed))
-                # Apply volume and clip
-                out = np.clip(out * self.volume, -32767, 32767).astype(np.int16)
-                self.last_output_chunk = out.copy()
-                return (out.tobytes(), pyaudio.paContinue)
+                # Volume with soft limiting (supports volume > 1.0 without harsh clipping)
+                left_float = (left / 32767.0) * self.volume
+                # soft clip via tanh
+                left_float = np.tanh(left_float)
+                left = (left_float * 32767.0).astype(np.int16)
+                self.last_output_chunk = left.copy()
+
+                # Pure frequency: adjustable high‑pass filter, duplicate to stereo
+                fc = max(50.0, min(600.0, (self.frequency_boost - 0.8) / 0.8 * 600.0))
+                RC = 1.0 / (2 * math.pi * max(50.0, fc))
+                dt = 1.0 / self.sample_rate
+                alpha_hp = RC / (RC + dt)
+                l_float = left.astype(np.float32) / 32767.0
+                y = np.empty_like(l_float)
+                prev_y = self.hp_y
+                prev_x = self.hp_prev_x
+                for i in range(frame_count):
+                    x = l_float[i]
+                    prev_y = alpha_hp * (prev_y + x - prev_x)
+                    y[i] = prev_y
+                    prev_x = x
+                self.hp_y = prev_y
+                self.hp_prev_x = prev_x
+                left_out = np.clip(y, -1, 1)
+                right_out = left_out
+                interleaved = np.empty(frame_count * 2, dtype=np.int16)
+                interleaved[0::2] = (left_out * 32767).astype(np.int16)
+                interleaved[1::2] = (right_out * 32767).astype(np.int16)
+                return (interleaved.tobytes(), pyaudio.paContinue)
             
             self.audio_stream = self.pyaudio_instance.open(
                 format=pyaudio.paInt16,
-                channels=1,
+                channels=2,
                 rate=self.sample_rate,
                 output=True,
                 frames_per_buffer=self.chunk_size,
@@ -708,11 +793,30 @@ class EnhancedMusicVisualizerApp:
         right_thumb = self.right_hand_landmarks[4]
         right_index = self.right_hand_landmarks[8]
         
-        # Calculate midpoints of finger control lines (EXACTLY like your image)
-        left_mid_x = int((left_thumb.x + left_index.x) / 2 * self.SCREEN_WIDTH)
-        left_mid_y = int((left_thumb.y + left_index.y) / 2 * self.SCREEN_HEIGHT)
-        right_mid_x = int((right_thumb.x + right_index.x) / 2 * self.SCREEN_WIDTH)
-        right_mid_y = int((right_thumb.y + right_index.y) / 2 * self.SCREEN_HEIGHT)
+        # Calculate midpoints of finger control lines
+        raw_left_mid = (
+            (left_thumb.x + left_index.x) / 2 * self.SCREEN_WIDTH,
+            (left_thumb.y + left_index.y) / 2 * self.SCREEN_HEIGHT,
+        )
+        raw_right_mid = (
+            (right_thumb.x + right_index.x) / 2 * self.SCREEN_WIDTH,
+            (right_thumb.y + right_index.y) / 2 * self.SCREEN_HEIGHT,
+        )
+        # Exponential smoothing for stability
+        if self.left_line_pos is None:
+            self.left_line_pos = raw_left_mid
+        else:
+            lx = self.left_line_pos[0] * (1 - self.ui_smoothing) + raw_left_mid[0] * self.ui_smoothing
+            ly = self.left_line_pos[1] * (1 - self.ui_smoothing) + raw_left_mid[1] * self.ui_smoothing
+            self.left_line_pos = (lx, ly)
+        if self.right_line_pos is None:
+            self.right_line_pos = raw_right_mid
+        else:
+            rx = self.right_line_pos[0] * (1 - self.ui_smoothing) + raw_right_mid[0] * self.ui_smoothing
+            ry = self.right_line_pos[1] * (1 - self.ui_smoothing) + raw_right_mid[1] * self.ui_smoothing
+            self.right_line_pos = (rx, ry)
+        left_mid_x, left_mid_y = int(self.left_line_pos[0]), int(self.left_line_pos[1])
+        right_mid_x, right_mid_y = int(self.right_line_pos[0]), int(self.right_line_pos[1])
         
         # Calculate distance between finger control lines
         fingers_distance = math.sqrt((right_mid_x - left_mid_x)**2 + (right_mid_y - left_mid_y)**2)
@@ -721,9 +825,38 @@ class EnhancedMusicVisualizerApp:
         line_count = max(3, min(25, int(fingers_distance // 15)))
         
         # Update volume based on line count (distance between hands)
-        self.volume = min(1.0, line_count / 20.0)
-        if self.is_playing:
-            pygame.mixer.music.set_volume(self.volume)
+        # Remove upper limit per request; downstream soft-limiter avoids harsh clipping
+        self.volume = (line_count / 15.0)
+        
+        # Map live FFT into per-line energies (visualizer behavior)
+        if len(self.fft_data) > 0:
+            # Smooth continuous spectrum and interpolate across bars for fluid motion
+            spectrum = self.fft_data[:300].astype(np.float32)
+            n = max(1, line_count)
+            for i in range(n):
+                # log-ish mapping across frequency bins
+                frac = i / max(n - 1, 1)
+                band_f = 5 + frac * (len(spectrum) - 1)
+                b0 = int(max(0, min(len(spectrum) - 1, math.floor(band_f))))
+                b1 = int(max(0, min(len(spectrum) - 1, b0 + 1)))
+                w = band_f - b0
+                energy_raw = (1 - w) * spectrum[b0] + w * spectrum[b1]
+                # Normalize and emphasize low/mid slightly; modulate by frequency depth
+                energy = (energy_raw / 1200.0) * (0.55 + 0.45 * self.frequency_boost)
+                # Temporal smoothing of spectral energy
+                self.bar_energy[i] = (
+                    self.bar_smoothing * self.bar_energy[i]
+                    + (1.0 - self.bar_smoothing) * float(energy)
+                )
+                # Envelope: fast attack, slow decay for visualizer feel
+                target_px = float(self.max_bar_px) * max(0.0, min(1.0, self.bar_energy[i]))
+                if target_px > self.bar_height[i]:
+                    self.bar_height[i] = (
+                        (1 - self.bar_attack) * self.bar_height[i]
+                        + self.bar_attack * target_px
+                    )
+                else:
+                    self.bar_height[i] *= self.bar_decay
         
         # Draw THIN vertical lines between the finger control lines
         for i in range(line_count):
@@ -732,10 +865,15 @@ class EnhancedMusicVisualizerApp:
             line_x = int(left_mid_x + t * (right_mid_x - left_mid_x))
             line_y = int(left_mid_y + t * (right_mid_y - left_mid_y))
             
-            # THIN vertical lines like in your image
-            line_height = 30 + (i % 4) * 10  # Varying heights for visual interest
+            # Height: base size + beat-reactive energy
+            # Base height target ~100px max; remove one-by-one sweep for smoothness
+            # Use envelope-shaped height; keep tiny base so small bars never disappear
+            base = 2
+            target_height = base + self.bar_height[i]
+            line_height = max(4, min(self.max_bar_px, int(target_height)))
             
-            # Draw thin white vertical lines (2px width)
+            # Draw thin white vertical bar (2px width) with min 10px height, max 100px
+            line_height = max(10, min(100, line_height))
             pygame.draw.rect(self.screen, (255, 255, 255), 
                            (line_x - 1, line_y - line_height//2, 2, line_height))
         
