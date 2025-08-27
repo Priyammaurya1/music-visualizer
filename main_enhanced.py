@@ -46,7 +46,7 @@ class EnhancedMusicVisualizerApp:
         self.cap = None
         self.init_camera()
         
-        # Audio setup
+        # Audio setup (PyAudio streaming)
         self.audio_thread = None
         self.audio_data = None
         self.original_audio_data = None
@@ -56,10 +56,14 @@ class EnhancedMusicVisualizerApp:
         self.current_song = None
         self.audio_length = 0
         self.playback_speed = 1.0
+        self.playback_pos = 0.0  # floating-point sample index
+        self.last_output_chunk = np.zeros(self.chunk_size, dtype=np.int16)
         
-        # Audio effects
-        self.audio_engine = None
+        # PyAudio engine state
+        self.pyaudio_instance = None
         self.audio_stream = None
+        self.stop_event = threading.Event()
+        self.lp_state = 0.0  # low-pass state for bass boost
         
         # Gesture control variables
         self.visualizer_active = False
@@ -505,43 +509,79 @@ class EnhancedMusicVisualizerApp:
                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
     def start_music_playback(self):
-        """Start music playback when visualizer activates"""
-        if not self.is_playing:
-            try:
-                # Use pygame mixer for music playback with volume control
-                pygame.mixer.music.load("sample_music.mp3")
-                pygame.mixer.music.play(-1)  # -1 means loop indefinitely
-                pygame.mixer.music.set_volume(self.volume)
-                self.is_playing = True
-                self.audio_pos = 0  # Reset audio position for FFT
-                print("🎵 Music started playing!")
-                print(f"Volume: {self.volume:.2f} | Speed: {self.speed:.2f} | Frequency: {self.frequency_boost:.2f}")
-            except Exception as e:
-                print(f"Error playing music: {e}")
+        """Start streaming playback using PyAudio."""
+        if self.is_playing or self.audio_data is None:
+            return
+        try:
+            if self.pyaudio_instance is None:
+                self.pyaudio_instance = pyaudio.PyAudio()
+            
+            self.stop_event.clear()
+            self.playback_pos = 0.0
+            
+            def callback(in_data, frame_count, time_info, status):
+                if self.stop_event.is_set() or self.audio_data is None:
+                    return (np.zeros(frame_count, dtype=np.int16).tobytes(), pyaudio.paContinue)
+                # Read with speed (left hand controls speed -> playback_speed)
+                out = np.empty(frame_count, dtype=np.float32)
+                for i in range(frame_count):
+                    idx = int(self.playback_pos)
+                    frac = self.playback_pos - idx
+                    if idx + 1 >= len(self.audio_data):
+                        self.playback_pos = 0.0
+                        idx = 0
+                        frac = 0.0
+                    # Linear interpolation
+                    s0 = self.audio_data[idx]
+                    s1 = self.audio_data[idx + 1]
+                    sample = (1.0 - frac) * s0 + frac * s1
+                    # Simple bass/frequency boost using one-pole low-pass emphasis
+                    cutoff = max(200.0, min(4000.0, 1000.0 * self.frequency_boost))
+                    # precompute alpha per sample rate (simple approx)
+                    # alpha ~ 2πfc/fs but clamped
+                    alpha = min(0.99, max(0.01, (2 * math.pi * cutoff) / self.sample_rate))
+                    self.lp_state = (1 - alpha) * self.lp_state + alpha * (sample / 32767.0)
+                    boosted = sample + (self.lp_state * 0.35 * (self.frequency_boost - 1.0) * 32767.0)
+                    out[i] = boosted
+                    self.playback_pos += max(0.5, min(2.0, self.speed))
+                # Apply volume and clip
+                out = np.clip(out * self.volume, -32767, 32767).astype(np.int16)
+                self.last_output_chunk = out.copy()
+                return (out.tobytes(), pyaudio.paContinue)
+            
+            self.audio_stream = self.pyaudio_instance.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=self.sample_rate,
+                output=True,
+                frames_per_buffer=self.chunk_size,
+                stream_callback=callback
+            )
+            self.audio_stream.start_stream()
+            self.is_playing = True
+            print("🎵 Music started (streaming)!")
+        except Exception as e:
+            print(f"Error starting audio stream: {e}")
     
     def stop_music_playback(self):
-        """Stop music playback when visualizer deactivates"""
-        if self.is_playing:
-            pygame.mixer.music.stop()
+        """Stop streaming playback."""
+        if not self.is_playing:
+            return
+        try:
+            self.stop_event.set()
+            if self.audio_stream is not None:
+                self.audio_stream.stop_stream()
+                self.audio_stream.close()
+                self.audio_stream = None
             self.is_playing = False
             print("⏹️ Music stopped.")
+        except Exception as e:
+            print(f"Error stopping audio: {e}")
     
     def restart_music_from_beginning(self):
-        """Restart music from the beginning when hands are detected"""
-        try:
-            # Stop current music if playing
-            if self.is_playing:
-                pygame.mixer.music.stop()
-            
-            # Load and play from beginning
-            pygame.mixer.music.load("sample_music.mp3")
-            pygame.mixer.music.play(-1)  # Loop indefinitely
-            pygame.mixer.music.set_volume(self.volume)
-            self.is_playing = True
-            self.audio_pos = 0  # Reset audio position for FFT
-            print("🔄 Music restarted from beginning!")
-        except Exception as e:
-            print(f"Error restarting music: {e}")
+        """Reset playback position to beginning without reloading."""
+        self.playback_pos = 0.0
+        print("🔄 Music position reset to start")
     
     def apply_real_speed_change(self):
         """DISABLED - Speed change causes restarts, visual feedback only"""
@@ -566,49 +606,27 @@ class EnhancedMusicVisualizerApp:
         pass
 
     def generate_enhanced_fft(self):
-        """Enhanced FFT generation with beat detection and parameter effects"""
-        if self.audio_data is None:
+        """Enhanced FFT generation using the last output audio chunk."""
+        if self.last_output_chunk is None or len(self.last_output_chunk) == 0:
             return
-        
-        # Speed affects playback position
-        chunk_start = int(self.audio_pos * self.speed)
-        chunk_end = min(chunk_start + self.chunk_size, len(self.audio_data))
-        
-        if chunk_end > chunk_start:
-            chunk = self.audio_data[chunk_start:chunk_end]
-            
-            # Apply frequency boost for visualization
-            if self.frequency_boost != 1.0:
-                chunk = chunk * self.frequency_boost
-                chunk = np.clip(chunk, -32767, 32767).astype(np.int16)
-            
-            if len(chunk) < self.chunk_size:
-                chunk = np.pad(chunk, (0, self.chunk_size - len(chunk)), 'constant')
-            
-            # Enhanced windowing for better frequency analysis
-            windowed = chunk * np.hanning(len(chunk))
-            fft_result = np.abs(fft(windowed))[:self.chunk_size//2]
-            
-            # Enhanced beat detection with frequency boost consideration
-            low_freq_energy = np.sum(fft_result[:50])  # Bass/kick drum
-            mid_freq_energy = np.sum(fft_result[50:150])  # Snare/vocals
-            high_freq_energy = np.sum(fft_result[150:300])  # Hi-hats/cymbals
-            
-            total_energy = low_freq_energy + mid_freq_energy * self.frequency_boost
-            
-            if total_energy > self.beat_detection_threshold * 1.3:
-                current_time = time.time()
-                beat_interval = 0.3 / max(self.speed, 0.5)  # Speed affects beat detection
-                if current_time - self.last_beat_time > beat_interval:
-                    self.last_beat_time = current_time
-                    self.pulse_intensity = min(1.0, total_energy / 10000)  # Scale pulse intensity
-            
-            self.beat_detection_threshold = 0.85 * self.beat_detection_threshold + 0.15 * total_energy
-            self.pulse_intensity *= 0.92  # Pulse decay
-            
-            # Smooth FFT data with frequency emphasis
-            smoothed_fft = fft_result[:512] * (1 + self.frequency_boost * 0.3)
-            self.fft_data = 0.6 * self.fft_data + 0.4 * smoothed_fft
+        chunk = self.last_output_chunk.astype(np.float32)
+        if len(chunk) < self.chunk_size:
+            chunk = np.pad(chunk, (0, self.chunk_size - len(chunk)), 'constant')
+        windowed = chunk * np.hanning(len(chunk))
+        fft_result = np.abs(fft(windowed))[:self.chunk_size//2]
+        low_freq_energy = np.sum(fft_result[:50])
+        mid_freq_energy = np.sum(fft_result[50:150])
+        total_energy = low_freq_energy + mid_freq_energy * self.frequency_boost
+        if total_energy > self.beat_detection_threshold * 1.3:
+            current_time = time.time()
+            beat_interval = 0.3 / max(self.speed, 0.5)
+            if current_time - self.last_beat_time > beat_interval:
+                self.last_beat_time = current_time
+                self.pulse_intensity = min(1.0, total_energy / 10000)
+        self.beat_detection_threshold = 0.85 * self.beat_detection_threshold + 0.15 * total_energy
+        self.pulse_intensity *= 0.92
+        smoothed_fft = fft_result[:512] * (1 + self.frequency_boost * 0.3)
+        self.fft_data = 0.6 * self.fft_data + 0.4 * smoothed_fft
 
     def spawn_particles(self):
         """Spawn particles on beat detection"""
@@ -648,7 +666,7 @@ class EnhancedMusicVisualizerApp:
             self.screen.blit(camera_surface, (0, 0))
         
         if self.visualizer_active:
-            # Generate enhanced FFT
+            # Generate enhanced FFT from last played audio
             self.generate_enhanced_fft()
             
             # Update color shift
