@@ -544,31 +544,24 @@ class EnhancedMusicVisualizerApp:
             print(f"Error restarting music: {e}")
     
     def apply_real_speed_change(self):
-        """Apply REAL speed change to music playback"""
+        """Apply REAL speed change - Simple method without FFmpeg"""
         if not self.is_playing:
             return
         
         try:
             print(f"🎵 Applying speed change: {self.speed:.1f}x")
             
-            # Load original audio with pydub
-            audio = AudioSegment.from_mp3("sample_music.mp3")
+            # Simple approach: Change pygame mixer frequency
+            # This affects both speed and pitch together
+            original_freq = 22050
+            new_freq = int(original_freq * self.speed)
             
-            # Change speed by altering frame rate
-            if abs(self.speed - 1.0) > 0.05:  # Only if significant change
-                # Method 1: Speed change by frame rate manipulation
-                new_frame_rate = int(audio.frame_rate * self.speed)
-                speed_audio = audio._spawn(audio.raw_data, overrides={"frame_rate": new_frame_rate})
-                speed_audio = speed_audio.set_frame_rate(22050)  # Normalize back to standard rate
-            else:
-                speed_audio = audio.set_frame_rate(22050)
+            # Reinitialize mixer with new frequency
+            pygame.mixer.quit()
+            pygame.mixer.init(frequency=new_freq, size=-16, channels=2, buffer=512)
             
-            # Export and reload
-            speed_audio.export("temp_music.mp3", format="mp3")
-            
-            # Restart music with new speed
-            pygame.mixer.music.stop()
-            pygame.mixer.music.load("temp_music.mp3")
+            # Reload and play music
+            pygame.mixer.music.load("sample_music.mp3")
             pygame.mixer.music.play(-1)
             pygame.mixer.music.set_volume(self.volume)
             
@@ -578,31 +571,24 @@ class EnhancedMusicVisualizerApp:
             print(f"❌ Speed change failed: {e}")
     
     def apply_real_frequency_change(self):
-        """Apply REAL frequency/pitch change to music"""
+        """Apply REAL frequency change - Simple method without FFmpeg"""
         if not self.is_playing:
             return
         
         try:
             print(f"🎵 Applying frequency change: {self.frequency_boost:.1f}x")
             
-            # Load original audio
-            audio = AudioSegment.from_mp3("sample_music.mp3")
+            # Simple approach: Change pygame mixer frequency  
+            # This affects both speed and pitch together
+            original_freq = 22050
+            new_freq = int(original_freq * self.frequency_boost)
             
-            # Change pitch by altering sample rate
-            if abs(self.frequency_boost - 1.0) > 0.05:  # Only if significant change
-                octaves = math.log2(self.frequency_boost)  # Convert to octaves
-                new_sample_rate = int(audio.frame_rate * (2 ** octaves))
-                freq_audio = audio._spawn(audio.raw_data, overrides={"frame_rate": new_sample_rate})
-                freq_audio = freq_audio.set_frame_rate(22050)  # Normalize back
-            else:
-                freq_audio = audio.set_frame_rate(22050)
+            # Reinitialize mixer with new frequency
+            pygame.mixer.quit()
+            pygame.mixer.init(frequency=new_freq, size=-16, channels=2, buffer=512)
             
-            # Export and reload
-            freq_audio.export("temp_music.mp3", format="mp3")
-            
-            # Restart music with new frequency
-            pygame.mixer.music.stop()
-            pygame.mixer.music.load("temp_music.mp3")
+            # Reload and play music
+            pygame.mixer.music.load("sample_music.mp3")
             pygame.mixer.music.play(-1)
             pygame.mixer.music.set_volume(self.volume)
             
