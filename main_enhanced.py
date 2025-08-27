@@ -29,14 +29,17 @@ class EnhancedMusicVisualizerApp:
         self.screen = pygame.display.set_mode((self.SCREEN_WIDTH, self.SCREEN_HEIGHT), pygame.RESIZABLE)
         pygame.display.set_caption("🎵 Music Visualizer - Drag corners to resize")
         
-        # MediaPipe setup
+        # MediaPipe setup - OPTIMIZED for performance
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=2,
-            min_detection_confidence=0.7,
-            min_tracking_confidence=0.5
+            min_detection_confidence=0.8,  # Higher threshold
+            min_tracking_confidence=0.7    # Higher threshold for stability
         )
+        
+        # Performance optimization
+        self.frame_skip = 0  # Skip frames for performance
         self.mp_draw = mp.solutions.drawing_utils
         
         # Camera setup
@@ -283,38 +286,37 @@ class EnhancedMusicVisualizerApp:
         return distance
 
     def update_audio_parameters(self):
-        """Enhanced parameter updates with smoothing and real-time audio effects"""
+        """Enhanced parameter updates with REAL speed/frequency control"""
         if not self.visualizer_active:
             return
         
         # Left hand controls frequency (as requested)
         if self.left_hand_landmarks:
             left_distance = self.calculate_finger_distance(self.left_hand_landmarks, 4, 8)
-            target_freq = max(0.1, min(3.0, left_distance * 8))
+            target_freq = max(0.7, min(1.5, left_distance * 8))
             old_freq = self.frequency_boost
-            self.frequency_boost = self.frequency_boost * (1 - self.smoothing_factor) + target_freq * self.smoothing_factor
+            self.frequency_boost = target_freq  # Direct assignment for responsiveness
             
-            # Debug output (minimal)
-            if abs(old_freq - self.frequency_boost) > 0.1:
+            # Apply frequency change with threshold to avoid too frequent changes
+            if abs(old_freq - self.frequency_boost) > 0.2:
                 print(f"🎛️ Frequency: {self.frequency_boost:.1f}x")
+                self.apply_real_frequency_change()
         
         # Right hand controls speed (as requested)
         if self.right_hand_landmarks:
             right_distance = self.calculate_finger_distance(self.right_hand_landmarks, 4, 8)
-            target_speed = max(0.1, min(3.0, right_distance * 8))
+            target_speed = max(0.7, min(1.5, right_distance * 8))
             old_speed = self.speed
-            self.speed = self.speed * (1 - self.smoothing_factor) + target_speed * self.smoothing_factor
+            self.speed = target_speed  # Direct assignment for responsiveness
             self.playback_speed = self.speed
             
-            # Debug output (minimal)
-            if abs(old_speed - self.speed) > 0.1:
+            # Apply speed change with threshold to avoid too frequent changes
+            if abs(old_speed - self.speed) > 0.2:
                 print(f"⚡ Speed: {self.speed:.1f}x")
+                self.apply_real_speed_change()
         
-        # Volume is now controlled by number of bars (distance between finger lines)
+        # Volume is controlled by number of lines (distance between finger lines)
         # This is handled in draw_volume_bars_between_hands() function
-        
-        # Apply real-time audio effects
-        self.apply_audio_effects()
 
     def calculate_hand_distance(self, left_landmarks, right_landmarks) -> float:
         """Calculate distance between hands using multiple points"""
@@ -470,34 +472,36 @@ class EnhancedMusicVisualizerApp:
                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
 
     def draw_volume_overlay(self, frame):
-        """Draw minimal volume display between hands"""
+        """Draw volume text BELOW the thin lines"""
         if not self.visualizer_active or not (self.left_hand_landmarks and self.right_hand_landmarks):
             return
             
         h, w, _ = frame.shape
         
-        # Use same calculation as volume bars
-        left_wrist = self.left_hand_landmarks[0]
-        right_wrist = self.right_hand_landmarks[0]
+        # Get finger positions for control lines (same as the lines)
+        left_thumb = self.left_hand_landmarks[4]
+        left_index = self.left_hand_landmarks[8]
+        right_thumb = self.right_hand_landmarks[4]
+        right_index = self.right_hand_landmarks[8]
         
-        left_pos = (int(left_wrist.x * w), int(left_wrist.y * h))
-        right_pos = (int(right_wrist.x * w), int(right_wrist.y * h))
+        # Calculate midpoints of finger control lines (same as lines positioning)
+        left_mid_x = int((left_thumb.x + left_index.x) / 2 * w)
+        left_mid_y = int((left_thumb.y + left_index.y) / 2 * h)
+        right_mid_x = int((right_thumb.x + right_index.x) / 2 * w)
+        right_mid_y = int((right_thumb.y + right_index.y) / 2 * h)
         
-        center_x = (left_pos[0] + right_pos[0]) // 2
-        center_y = (left_pos[1] + right_pos[1]) // 2
+        # Center position between the finger lines
+        center_x = (left_mid_x + right_mid_x) // 2
+        center_y = (left_mid_y + right_mid_y) // 2
         
-        # Calculate bars for display
-        fingers_distance = math.sqrt((right_pos[0] - left_pos[0])**2 + (right_pos[1] - left_pos[1])**2)
-        bars_count = max(1, int(fingers_distance // 20))  # 20px spacing
-        
-        # Draw volume text in minimal iPhone style
+        # Draw volume text BELOW the lines
         volume_text = "volume"
         volume_value = f"{int(self.volume * 10)}"
         
-        # Position volume text above the bars
-        cv2.putText(frame, volume_text, (center_x - 20, center_y - 35), 
+        # Position volume text BELOW the thin lines (+40px below center)
+        cv2.putText(frame, volume_text, (center_x - 20, center_y + 40), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
-        cv2.putText(frame, volume_value, (center_x - 5, center_y - 20), 
+        cv2.putText(frame, volume_value, (center_x - 5, center_y + 55), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
     def start_music_playback(self):
@@ -538,6 +542,74 @@ class EnhancedMusicVisualizerApp:
             print("🔄 Music restarted from beginning!")
         except Exception as e:
             print(f"Error restarting music: {e}")
+    
+    def apply_real_speed_change(self):
+        """Apply REAL speed change to music playback"""
+        if not self.is_playing:
+            return
+        
+        try:
+            print(f"🎵 Applying speed change: {self.speed:.1f}x")
+            
+            # Load original audio with pydub
+            audio = AudioSegment.from_mp3("sample_music.mp3")
+            
+            # Change speed by altering frame rate
+            if abs(self.speed - 1.0) > 0.05:  # Only if significant change
+                # Method 1: Speed change by frame rate manipulation
+                new_frame_rate = int(audio.frame_rate * self.speed)
+                speed_audio = audio._spawn(audio.raw_data, overrides={"frame_rate": new_frame_rate})
+                speed_audio = speed_audio.set_frame_rate(22050)  # Normalize back to standard rate
+            else:
+                speed_audio = audio.set_frame_rate(22050)
+            
+            # Export and reload
+            speed_audio.export("temp_music.mp3", format="mp3")
+            
+            # Restart music with new speed
+            pygame.mixer.music.stop()
+            pygame.mixer.music.load("temp_music.mp3")
+            pygame.mixer.music.play(-1)
+            pygame.mixer.music.set_volume(self.volume)
+            
+            print(f"✅ Music speed changed to {self.speed:.1f}x")
+            
+        except Exception as e:
+            print(f"❌ Speed change failed: {e}")
+    
+    def apply_real_frequency_change(self):
+        """Apply REAL frequency/pitch change to music"""
+        if not self.is_playing:
+            return
+        
+        try:
+            print(f"🎵 Applying frequency change: {self.frequency_boost:.1f}x")
+            
+            # Load original audio
+            audio = AudioSegment.from_mp3("sample_music.mp3")
+            
+            # Change pitch by altering sample rate
+            if abs(self.frequency_boost - 1.0) > 0.05:  # Only if significant change
+                octaves = math.log2(self.frequency_boost)  # Convert to octaves
+                new_sample_rate = int(audio.frame_rate * (2 ** octaves))
+                freq_audio = audio._spawn(audio.raw_data, overrides={"frame_rate": new_sample_rate})
+                freq_audio = freq_audio.set_frame_rate(22050)  # Normalize back
+            else:
+                freq_audio = audio.set_frame_rate(22050)
+            
+            # Export and reload
+            freq_audio.export("temp_music.mp3", format="mp3")
+            
+            # Restart music with new frequency
+            pygame.mixer.music.stop()
+            pygame.mixer.music.load("temp_music.mp3")
+            pygame.mixer.music.play(-1)
+            pygame.mixer.music.set_volume(self.volume)
+            
+            print(f"✅ Music frequency changed to {self.frequency_boost:.1f}x")
+            
+        except Exception as e:
+            print(f"❌ Frequency change failed: {e}")
     
     def apply_realtime_audio_effects(self):
         """Apply real-time audio effects for speed and frequency"""
@@ -638,13 +710,14 @@ class EnhancedMusicVisualizerApp:
             # Update color shift
             self.color_shift = (self.color_shift + 0.005) % 1.0
             
-            # Draw volume bars between hands (TouchDesigner style)
-            self.draw_volume_bars_between_hands()
-            
             # Update audio position
             self.audio_pos += self.speed * self.chunk_size / 60
             if self.audio_pos >= len(self.audio_data):
                 self.audio_pos = 0
+        
+        # ALWAYS draw lines LAST so they appear on top of everything
+        if self.visualizer_active:
+            self.draw_volume_bars_between_hands()
     
     def convert_cv_to_pygame(self, cv_frame):
         """Convert OpenCV frame to pygame surface"""
@@ -663,17 +736,17 @@ class EnhancedMusicVisualizerApp:
             pygame.draw.rect(self.screen, color, (0, y, self.SCREEN_WIDTH, 4))
 
     def draw_volume_bars_between_hands(self):
-        """Draw bars between finger control lines with dynamic count based on distance"""
+        """Draw THIN vertical lines between finger control lines like in the image"""
         if not self.visualizer_active or not (self.left_hand_landmarks and self.right_hand_landmarks):
             return
         
-        # Get finger positions for control lines
+        # Get finger positions for control lines (thumb and index finger)
         left_thumb = self.left_hand_landmarks[4]
         left_index = self.left_hand_landmarks[8]
         right_thumb = self.right_hand_landmarks[4]
         right_index = self.right_hand_landmarks[8]
         
-        # Calculate midpoints of finger control lines
+        # Calculate midpoints of finger control lines (EXACTLY like your image)
         left_mid_x = int((left_thumb.x + left_index.x) / 2 * self.SCREEN_WIDTH)
         left_mid_y = int((left_thumb.y + left_index.y) / 2 * self.SCREEN_HEIGHT)
         right_mid_x = int((right_thumb.x + right_index.x) / 2 * self.SCREEN_WIDTH)
@@ -682,57 +755,29 @@ class EnhancedMusicVisualizerApp:
         # Calculate distance between finger control lines
         fingers_distance = math.sqrt((right_mid_x - left_mid_x)**2 + (right_mid_y - left_mid_y)**2)
         
-        # Fixed bar spacing of 12px for better visibility
-        bar_spacing = 12
-        bar_width = 6  # Make bars wider
+        # Line count based on distance - closer hands = fewer lines, farther = more lines
+        line_count = max(3, min(25, int(fingers_distance // 15)))
         
-        # Calculate number of bars based on distance (dynamic count)
-        bars_to_show = max(1, int(fingers_distance // bar_spacing))
-        
-        # Update volume based on number of bars (distance)
-        volume_from_bars = min(1.0, bars_to_show / 10.0)  # More bars = higher volume
-        self.volume = volume_from_bars
-        
-        # Update pygame music volume
+        # Update volume based on line count (distance between hands)
+        self.volume = min(1.0, line_count / 20.0)
         if self.is_playing:
             pygame.mixer.music.set_volume(self.volume)
         
-        # Center Y position between finger lines
-        center_y = (left_mid_y + right_mid_y) // 2
-        
-        # Start position (left finger line)
-        start_x = left_mid_x
-        
-        # ALWAYS draw at least some bars for testing
-        bars_to_draw = min(bars_to_show, int((right_mid_x - left_mid_x) // bar_spacing))
-        
-        for i in range(bars_to_draw):
-            # Position bars with fixed spacing
-            bar_x = start_x + (i * bar_spacing)
+        # Draw THIN vertical lines between the finger control lines
+        for i in range(line_count):
+            # Position lines evenly between left and right finger midpoints
+            t = i / max(line_count - 1, 1)  # Interpolation factor (0 to 1)
+            line_x = int(left_mid_x + t * (right_mid_x - left_mid_x))
+            line_y = int(left_mid_y + t * (right_mid_y - left_mid_y))
             
-            # Make sure bars are visible - larger size
-            base_height = 40  # Much taller
+            # THIN vertical lines like in your image
+            line_height = 30 + (i % 4) * 10  # Varying heights for visual interest
             
-            # Music reactivity - make bars DANCE with beats
-            fft_index = int(i * len(self.fft_data) / max(bars_to_draw, 1)) if len(self.fft_data) > 0 else 0
-            magnitude = self.fft_data[fft_index] if fft_index < len(self.fft_data) else 0
-            beat_height = min(magnitude / 300 * 60, 60)  # More reactive to music beats
-            
-            # Volume affects bar height
-            volume_height = int(self.volume * 50)
-            
-            total_height = max(base_height + beat_height + volume_height, 30)  # Minimum height
-            
-            # Position bars
-            bar_y = center_y - total_height // 2
-            
-            # Draw VERY bright white bars
+            # Draw thin white vertical lines (2px width)
             pygame.draw.rect(self.screen, (255, 255, 255), 
-                           (bar_x, bar_y, bar_width, total_height))
-            
-            # Add bright border for maximum visibility
-            pygame.draw.rect(self.screen, (255, 255, 0), 
-                           (bar_x-1, bar_y-1, bar_width+2, total_height+2), 2)
+                           (line_x - 1, line_y - line_height//2, 2, line_height))
+        
+        print(f"Drew {line_count} thin lines between hands, volume: {self.volume:.2f}")
 
     def draw_enhanced_center_overlay(self):
         """Draw clean center visualization like TouchDesigner"""
