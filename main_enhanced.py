@@ -29,13 +29,13 @@ class EnhancedMusicVisualizerApp:
         self.screen = pygame.display.set_mode((self.SCREEN_WIDTH, self.SCREEN_HEIGHT), pygame.RESIZABLE)
         pygame.display.set_caption("🎵 Music Visualizer - Drag corners to resize")
         
-        # MediaPipe setup - OPTIMIZED for performance
+        # MediaPipe setup - OPTIMIZED for fast detection
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=2,
-            min_detection_confidence=0.8,  # Higher threshold
-            min_tracking_confidence=0.7    # Higher threshold for stability
+            min_detection_confidence=0.5,  # Lower for faster detection
+            min_tracking_confidence=0.5    # Lower for faster detection
         )
         
         # Performance optimization
@@ -66,7 +66,7 @@ class EnhancedMusicVisualizerApp:
         self.left_hand_landmarks = None
         self.right_hand_landmarks = None
         self.gesture_stability_counter = 0
-        self.required_stability = 10  # Frames needed for stable activation
+        self.required_stability = 3  # Much faster activation - only 3 frames needed
         
         # Control parameters with smoothing
         self.speed = 1.0
@@ -286,34 +286,32 @@ class EnhancedMusicVisualizerApp:
         return distance
 
     def update_audio_parameters(self):
-        """Enhanced parameter updates with REAL speed/frequency control"""
+        """Enhanced parameter updates - VISUAL ONLY to prevent restarts"""
         if not self.visualizer_active:
             return
         
-        # Left hand controls frequency (as requested)
+        # Left hand controls frequency (VISUAL FEEDBACK ONLY)
         if self.left_hand_landmarks:
             left_distance = self.calculate_finger_distance(self.left_hand_landmarks, 4, 8)
-            target_freq = max(0.7, min(1.5, left_distance * 8))
+            target_freq = max(0.5, min(2.0, left_distance * 8))
             old_freq = self.frequency_boost
             self.frequency_boost = target_freq  # Direct assignment for responsiveness
             
-            # Apply frequency change with threshold to avoid too frequent changes
-            if abs(old_freq - self.frequency_boost) > 0.2:
-                print(f"🎛️ Frequency: {self.frequency_boost:.1f}x")
-                self.apply_real_frequency_change()
+            # Show visual feedback only (no audio restart)
+            if abs(old_freq - self.frequency_boost) > 0.1:
+                print(f"🎛️ Frequency: {self.frequency_boost:.1f}x (visual only)")
         
-        # Right hand controls speed (as requested)
+        # Right hand controls speed (VISUAL FEEDBACK ONLY)
         if self.right_hand_landmarks:
             right_distance = self.calculate_finger_distance(self.right_hand_landmarks, 4, 8)
-            target_speed = max(0.7, min(1.5, right_distance * 8))
+            target_speed = max(0.5, min(2.0, right_distance * 8))
             old_speed = self.speed
             self.speed = target_speed  # Direct assignment for responsiveness
             self.playback_speed = self.speed
             
-            # Apply speed change with threshold to avoid too frequent changes
-            if abs(old_speed - self.speed) > 0.2:
-                print(f"⚡ Speed: {self.speed:.1f}x")
-                self.apply_real_speed_change()
+            # Show visual feedback only (no audio restart)
+            if abs(old_speed - self.speed) > 0.1:
+                print(f"⚡ Speed: {self.speed:.1f}x (visual only)")
         
         # Volume is controlled by number of lines (distance between finger lines)
         # This is handled in draw_volume_bars_between_hands() function
@@ -407,17 +405,19 @@ class EnhancedMusicVisualizerApp:
                 if self.gesture_stability_counter >= self.required_stability:
                     if not self.visualizer_active:
                         self.visualizer_active = True
-                        self.restart_music_from_beginning()
+                        self.start_music_playback()  # Just start, don't restart
+                        print("🎵 Visualizer activated - music playing!")
                     self.left_hand_landmarks = current_left
                     self.right_hand_landmarks = current_right
             else:
-                self.gesture_stability_counter = max(0, self.gesture_stability_counter - 2)
+                self.gesture_stability_counter = max(0, self.gesture_stability_counter - 1)
                 if self.gesture_stability_counter <= 0:
                     if self.visualizer_active:
                         self.visualizer_active = False
                         self.stop_music_playback()
+                        print("⏹️ Visualizer deactivated - music stopped!")
         else:
-            self.gesture_stability_counter = max(0, self.gesture_stability_counter - 3)
+            self.gesture_stability_counter = max(0, self.gesture_stability_counter - 2)
             if self.gesture_stability_counter <= 0:
                 if self.visualizer_active:
                     self.visualizer_active = False
@@ -544,58 +544,16 @@ class EnhancedMusicVisualizerApp:
             print(f"Error restarting music: {e}")
     
     def apply_real_speed_change(self):
-        """Apply REAL speed change - Simple method without FFmpeg"""
-        if not self.is_playing:
-            return
-        
-        try:
-            print(f"🎵 Applying speed change: {self.speed:.1f}x")
-            
-            # Simple approach: Change pygame mixer frequency
-            # This affects both speed and pitch together
-            original_freq = 22050
-            new_freq = int(original_freq * self.speed)
-            
-            # Reinitialize mixer with new frequency
-            pygame.mixer.quit()
-            pygame.mixer.init(frequency=new_freq, size=-16, channels=2, buffer=512)
-            
-            # Reload and play music
-            pygame.mixer.music.load("sample_music.mp3")
-            pygame.mixer.music.play(-1)
-            pygame.mixer.music.set_volume(self.volume)
-            
-            print(f"✅ Music speed changed to {self.speed:.1f}x")
-            
-        except Exception as e:
-            print(f"❌ Speed change failed: {e}")
+        """DISABLED - Speed change causes restarts, visual feedback only"""
+        # This function is disabled to prevent music restarts
+        # The speed value is shown visually but doesn't affect actual playback
+        pass
     
     def apply_real_frequency_change(self):
-        """Apply REAL frequency change - Simple method without FFmpeg"""
-        if not self.is_playing:
-            return
-        
-        try:
-            print(f"🎵 Applying frequency change: {self.frequency_boost:.1f}x")
-            
-            # Simple approach: Change pygame mixer frequency  
-            # This affects both speed and pitch together
-            original_freq = 22050
-            new_freq = int(original_freq * self.frequency_boost)
-            
-            # Reinitialize mixer with new frequency
-            pygame.mixer.quit()
-            pygame.mixer.init(frequency=new_freq, size=-16, channels=2, buffer=512)
-            
-            # Reload and play music
-            pygame.mixer.music.load("sample_music.mp3")
-            pygame.mixer.music.play(-1)
-            pygame.mixer.music.set_volume(self.volume)
-            
-            print(f"✅ Music frequency changed to {self.frequency_boost:.1f}x")
-            
-        except Exception as e:
-            print(f"❌ Frequency change failed: {e}")
+        """DISABLED - Frequency change causes restarts, visual feedback only"""
+        # This function is disabled to prevent music restarts  
+        # The frequency value is shown visually but doesn't affect actual playback
+        pass
     
     def apply_realtime_audio_effects(self):
         """Apply real-time audio effects for speed and frequency"""
