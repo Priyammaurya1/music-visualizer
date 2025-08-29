@@ -349,17 +349,17 @@ class EnhancedMusicVisualizerApp:
         # Left hand controls frequency (pure frequency control)
         if self.left_hand_landmarks:
             left_distance = self.calculate_finger_distance(self.left_hand_landmarks, 4, 8)
-            # Map pinch distance from [0.02, 0.2] to [50, 500] Hz for intuitive control
+            # Map pinch distance from [0.02, 0.2] to [50, 1000] Hz for intuitive control
             min_dist, max_dist = 0.02, 0.2
             normalized_dist = (left_distance - min_dist) / (max_dist - min_dist)
             normalized_dist = max(0.0, min(1.0, normalized_dist))  # Clip to 0-1 range
 
             self.lpf_cutoff_hz = 200.0 + (normalized_dist**2) * 9800.0 # Exp mapping for LPF
 
-            freq_hz = 50.0 + normalized_dist * 450.0
+            freq_hz = 50.0 + normalized_dist * 950.0
             self.frequency_hz = freq_hz
             # Convert to a visual boost factor for bars (kept modest)
-            target_freq = 0.8 + (freq_hz / 500.0) * 0.8
+            target_freq = 0.8 + (freq_hz / 1000.0) * 0.8
             old_freq = self.frequency_boost
             self.frequency_boost = target_freq
             
