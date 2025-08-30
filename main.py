@@ -354,7 +354,7 @@ class EnhancedMusicVisualizerApp:
             normalized_dist = (left_distance - min_dist) / (max_dist - min_dist)
             normalized_dist = max(0.0, min(1.0, normalized_dist))  # Clip to 0-1 range
 
-            self.lpf_cutoff_hz = 200.0 + (normalized_dist**2) * 9800.0 # Exp mapping for LPF
+            self.lpf_cutoff_hz = 50.0 + (normalized_dist**2) * 950.0 # Exp mapping for LPF
 
             freq_hz = 50.0 + normalized_dist * 950.0
             self.frequency_hz = freq_hz
@@ -719,29 +719,73 @@ class EnhancedMusicVisualizerApp:
         self.fft_data = 0.6 * self.fft_data + 0.4 * smoothed_fft
 
     def spawn_particles(self):
-        """Spawn particles on beat detection"""
-        for _ in range(10):
+        """Spawn particles on beat detection with enhanced visual effects."""
+        for _ in range(15):  # More particles for stronger beats
             particle = {
-                'x': self.SCREEN_WIDTH // 2 + np.random.randint(-100, 100),
-                'y': self.SCREEN_HEIGHT // 2 + np.random.randint(-100, 100),
-                'vx': np.random.uniform(-5, 5),
-                'vy': np.random.uniform(-5, 5),
+                'x': self.SCREEN_WIDTH // 2 + np.random.randint(-150, 150),
+                'y': self.SCREEN_HEIGHT // 2 + np.random.randint(-150, 150),
+                'vx': np.random.uniform(-8, 8),
+                'vy': np.random.uniform(-8, 8),
                 'life': 1.0,
-                'size': np.random.randint(3, 8),
-                'color': self.hsv_to_rgb(np.random.random(), 1.0, 1.0)
+                'size': np.random.randint(4, 12),
+                'color': self.hsv_to_rgb(np.random.random(), 1.0, 1.0),
+                'beat_intensity': self.pulse_intensity  # Store beat intensity
             }
             self.particles.append(particle)
 
     def update_particles(self):
-        """Update particle system"""
+        """Update particle system with beat-reactive behavior."""
         for particle in self.particles[:]:
+            # Update position
             particle['x'] += particle['vx']
             particle['y'] += particle['vy']
-            particle['life'] -= 0.02
-            particle['size'] *= 0.99
             
+            # Apply beat-reactive effects
+            if self.is_beat:
+                # Particles pulse with the beat
+                beat_scale = 1.0 + self.pulse_intensity * 0.5
+                particle['size'] *= beat_scale
+                particle['vx'] *= 1.02  # Slight acceleration on beat
+                particle['vy'] *= 1.02
+            
+            # Decay life and size
+            particle['life'] -= 0.015
+            particle['size'] *= 0.98
+            
+            # Add some gravity effect
+            particle['vy'] += 0.1
+            
+            # Remove dead particles
             if particle['life'] <= 0 or particle['size'] < 1:
                 self.particles.remove(particle)
+
+    def draw_particles(self):
+        """Draw particles with beat-reactive effects."""
+        for particle in self.particles:
+            if particle['life'] > 0:
+                # Calculate alpha based on life
+                alpha = int(particle['life'] * 255)
+                
+                # Beat-reactive color intensity
+                if self.is_beat:
+                    color_intensity = min(255, 200 + int(self.pulse_intensity * 55))
+                    particle_color = (color_intensity, color_intensity, 255, alpha)
+                else:
+                    particle_color = (*particle['color'], alpha)
+                
+                # Draw particle with size variation
+                size = int(particle['size'])
+                if size > 0:
+                    # Draw main particle
+                    pygame.draw.circle(self.screen, particle_color, 
+                                     (int(particle['x']), int(particle['y'])), size)
+                    
+                    # Add glow effect on strong beats
+                    if self.is_beat and self.pulse_intensity > 0.6:
+                        glow_size = size + 3
+                        glow_color = (*particle_color[:3], 50)  # Semi-transparent
+                        pygame.draw.circle(self.screen, glow_color,
+                                         (int(particle['x']), int(particle['y'])), glow_size)
 
     def draw_enhanced_visualizer(self, camera_frame):
         """Draw enhanced visualizer overlay on camera feed"""
@@ -871,14 +915,15 @@ class EnhancedMusicVisualizerApp:
             dot_y = int(left_mid_y + t * (right_mid_y - left_mid_y))
 
             if self.is_beat:
-                # On beat, draw a 10px long, 2px thick line
+                # On beat: draw thin vertical line (2px wide, height based on beat intensity)
+                line_height = int(max(8, min(20, self.pulse_intensity * 25)))
                 pygame.draw.rect(self.screen, (255, 255, 255),
-                               (dot_x - 1, dot_y - 5, 2, 10))
+                               (dot_x - 1, dot_y - line_height // 2, 2, line_height))
             else:
-                # Default: draw a 2px diameter dot (1px radius)
+                # No beat: draw small dot (2px diameter)
                 pygame.draw.circle(self.screen, (255, 255, 255), (dot_x, dot_y), 1)
 
-        print(f"Drew {dot_count} dots between hands, volume: {self.volume:.2f}")
+        print(f"Drew {dot_count} beat-reactive elements between hands, volume: {self.volume:.2f}")
 
     def draw_enhanced_center_overlay(self):
         """Draw clean center visualization like TouchDesigner"""
@@ -886,10 +931,6 @@ class EnhancedMusicVisualizerApp:
             return
             
         # Remove ugly rings and spokes - keep it minimal like TouchDesigner
-        pass
-
-    def draw_particles(self):
-        """Remove particle effects for clean TouchDesigner look"""
         pass
 
     def draw_enhanced_waveforms_overlay(self):
